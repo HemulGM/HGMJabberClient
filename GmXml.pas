@@ -39,6 +39,7 @@ type
     FParent: TGmXmlNode;
     FValue: string;
     FParams: TStringList;
+    FSingleClose: Boolean;
     // events...
     function GetAsDisplayString: string;
     function GetIsLeafNode: Boolean;
@@ -58,6 +59,7 @@ type
     function GetParams: TStrings;
     procedure SetParams(const Value: TStrings);
     function ReplaceStrToXML(Value: string): string;
+    procedure SetSingleClose(const Value: Boolean);
   public
     constructor Create(AParentNode: TGmXmlNode); virtual;
     destructor Destroy; override;
@@ -74,6 +76,7 @@ type
     property Name: string read FName write SetName;
     property Parent: TGmXmlNode read FParent;
     property Params: TStrings read GetParams write SetParams;
+    property SingleClose: Boolean read FSingleClose write SetSingleClose;
   end;
 
   // *** TGmXmlNodeList ***
@@ -93,7 +96,7 @@ type
     constructor Create(AParent: TGmXmlNode);
     destructor Destroy; override;
     function AddLeaf(AName: string): TGmXmlNode;
-    function AddOpenTag(AName: string): TGmXmlNode;
+    function AddOpenTag(AName: string; SingleClose: Boolean = False): TGmXmlNode;
     procedure AddCloseTag;
     //procedure NextNode;
     procedure Clear;
@@ -106,7 +109,7 @@ type
 
   // *** TGmXML ***
 
-  TGmXML = class(TComponent)
+  TGmXML = class
   private
     FAutoIndent: Boolean;
     FEncoding: string;
@@ -120,7 +123,7 @@ type
     procedure SetAsText(Value: string);
     procedure SetAutoIndent(const Value: Boolean);
   public
-    constructor Create(AOwner: TComponent); override;
+    constructor Create;
     destructor Destroy; override;
     procedure LoadFromFile(AFileName: string);
     procedure LoadFromStream(Stream: TStream);
@@ -208,6 +211,7 @@ end;
 constructor TGmXmlNode.Create(AParentNode: TGmXmlNode);
 begin
   inherited Create;
+  FSingleClose := False;
   FChildren := TGmXmlNodeList.Create(Self);
   FElement := TGmXmlNodeAttribute.Create;
   FParams := TStringList.Create;
@@ -215,7 +219,6 @@ begin
   FParent := AParentNode;
   FElement.Name := '';
   FElement.Value := '';
-
 end;
 
 destructor TGmXmlNode.Destroy;
@@ -428,9 +431,10 @@ begin
   AddCloseTag;
 end;
 
-function TGmXmlNodeList.AddOpenTag(AName: string): TGmXmlNode;
+function TGmXmlNodeList.AddOpenTag(AName: string; SingleClose: Boolean): TGmXmlNode;
 begin
   Result := TGmXmlNode.Create(FCurrentNode);
+  Result.SingleClose := SingleClose;
   Result.Name := AName;
   if FCurrentNode = nil then
     AddNode(Result)
@@ -442,7 +446,8 @@ end;
 
 procedure TGmXmlNodeList.AddCloseTag;
 begin
-  FCurrentNode := FCurrentNode.Parent;
+  if Assigned(FCurrentNode) then
+    FCurrentNode := FCurrentNode.Parent;
 end;
 
 {procedure TGmXmlNodeList.NextNode;
@@ -527,9 +532,9 @@ end;
 
 // *** TGmXml ***
 
-constructor TGmXml.Create(AOwner: TComponent);
+constructor TGmXml.Create;
 begin
-  inherited Create(AOwner);
+  inherited Create;
   FStrings := TStringList.Create;
   FNodes := TGmXmlNodeList.Create(nil);
   FIncludeHeader := False;
@@ -577,7 +582,10 @@ function TGmXml.GetText(ReplaceEscapeChars: Boolean): string;
         AOpenTag := ANode.OpenTag;
         ACloseTag := ANode.CloseTag;
         AOpenTag := Copy(AOpenTag, 1, length(AOpenTag) - 1);
-        ACloseTag := '/>';
+        if ANode.SingleClose then
+          ACloseTag := '>'
+        else
+          ACloseTag := '/>';
         AXml.Add(AOpenTag + ACloseTag);
       end
       else
@@ -722,6 +730,11 @@ end;
 procedure TGmXmlNode.SetParams(const Value: TStrings);
 begin
   FParams.Assign(Value);
+end;
+
+procedure TGmXmlNode.SetSingleClose(const Value: Boolean);
+begin
+  FSingleClose := Value;
 end;
 
 function TGmXmlNode.ReplaceStrToXML(Value: string): string;
