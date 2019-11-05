@@ -98,10 +98,13 @@ type
     function AddLeaf(AName: string): TGmXmlNode;
     function AddOpenTag(AName: string; SingleClose: Boolean = False): TGmXmlNode;
     procedure AddCloseTag;
+    procedure AddTagValue(AName, AValue: string);
+    procedure AddTagWithParam(AName, AParam, AValue: string);
     //procedure NextNode;
     procedure Clear;
     property Count: integer read GetCount;
     property CurrentNode: TGmXmlNode read FCurrentNode write FCurrentNode;
+    function NodeExists(AName: string): Boolean;
     property Node[index: integer]: TGmXmlNode read GetNode write SetNode; default;
     property NodeByName[AName: string]: TGmXmlNode read GetNodeByName write SetNodeByName;
     property Root: TGmXmlNode read GetRoot;
@@ -132,7 +135,6 @@ type
     property DisplayText: string read GetDisplayText;
     property Nodes: TGmXmlNodeList read FNodes;
     property Text: string read GetXmlText write SetAsText;
-  published
     property AutoIndent: Boolean read FAutoIndent write SetAutoIndent default True;
     property Encoding: string read FEncoding write FEncoding;
     property IncludeHeader: Boolean read FIncludeHeader write FIncludeHeader default True;
@@ -444,6 +446,18 @@ begin
   FCurrentNode := Result;
 end;
 
+procedure TGmXmlNodeList.AddTagValue(AName, AValue: string);
+begin
+  AddOpenTag(AName).AsString := AValue;
+  AddCloseTag;
+end;
+
+procedure TGmXmlNodeList.AddTagWithParam(AName, AParam, AValue: string);
+begin
+  AddOpenTag(AName).Params.Values[AParam] := AValue;
+  AddCloseTag;
+end;
+
 procedure TGmXmlNodeList.AddCloseTag;
 begin
   if Assigned(FCurrentNode) then
@@ -494,6 +508,18 @@ begin
       Result := Node[ICount];
       Exit;
     end;
+  end;
+end;
+
+function TGmXmlNodeList.NodeExists(AName: string): Boolean;
+var
+  ICount: integer;
+begin
+  Result := False;
+  for ICount := 0 to Count - 1 do
+  begin
+    if Node[ICount].Name = AName then
+      Exit(True);
   end;
 end;
 

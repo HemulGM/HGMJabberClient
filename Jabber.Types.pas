@@ -3,15 +3,17 @@ unit Jabber.Types;
 interface
 
 uses
-  Vcl.Controls, Winapi.Messages, System.SysUtils, System.Classes;
+  Vcl.Controls, Winapi.Messages, System.SysUtils, System.Classes, GmXml,
+  System.Generics.Collections, Vcl.Imaging.pngimage;
 
 const
-  XMLNS_AUTH = 'jabber:iq:auth';
+  XMLNS_AUTH = 'jabber:iq:auth'; //unusable
   XMLNS_ROSTER = 'jabber:iq:roster';
   XMLNS_REGISTER = 'jabber:iq:register';
   XMLNS_LAST = 'jabber:iq:last';
   XMLNS_TIME = 'jabber:iq:time';
   XMLNS_VERSION = 'jabber:iq:version';
+  XMLNS_PING = 'jabber:iq:ping';
   XMLNS_IQOOB = 'jabber:iq:oob';
   XMLNS_BROWSE = 'jabber:iq:browse';
   XMLNS_AGENTS = 'jabber:iq:agents';
@@ -27,8 +29,11 @@ const
   XMLNS_XOOB = 'jabber:x:oob';
   XMLNS_STREAMFEATURES = 'stream:features';
   XMLNS_STREAMERROR = 'stream:error';
+  XMLNS_STREAM = 'stream:stream';
   XMLNS_BM = 'storage:bookmarks';
   XMLNS_PREFS = 'storage:imprefs';
+  XMLNS_VCARD = 'vcard-temp';
+  XMLNS_VCARDUPDATE = 'vcard-temp:x:update';
   XMLNS_MUC = 'http://jabber.org/protocol/muc';
   XMLNS_MUCOWNER = 'http://jabber.org/protocol/muc#owner';
   XMLNS_MUCADMIN = 'http://jabber.org/protocol/muc#admin';
@@ -110,9 +115,21 @@ const
   MSG_Failure = 'Protokol Error';
 
 type
-  TErrorType = (ERR_SOCKET, ERR_INTERNAL, ERR_WARNING, ERR_PROXY, ERR_PROTOCOL, ERR_CONNTIMEOUT, ERR_LOGIN);
+  TJabberMessage = record
+    ID: string;
+    From: string;
+    Nick: string;
+    Subject: string;
+    ToJID: string;
+    Body: string;
+    Delay: string;
+    MessageType: string;
+    Thread: string;
+    Displayed: Boolean;
+    Received : Boolean;
+  end;
 
-  TMechanisms = (mecDIGEST_MD5, mecPLAIN, mecNONE);
+  TErrorType = (ERR_SOCKET, ERR_INTERNAL, ERR_WARNING, ERR_PROXY, ERR_PROTOCOL, ERR_CONNTIMEOUT, ERR_LOGIN);
 
   TOnError = procedure(Sender: TObject; ErrorType: TErrorType; ErrorMsg: string) of object;
 
@@ -124,15 +141,15 @@ type
 
   TOnConnectError = procedure(Sender: TObject) of object;
 
-  TOnGetRoster = procedure(Sender: TObject; RosterList: string) of object;
+  TOnGetRoster = procedure(Sender: TObject; QueryNode: TGmXmlNode) of object;
 
-  TOnGetBookMarks = procedure(Sender: TObject; BookMarks: string) of object;
+  TOnGetBookMarks = procedure(Sender: TObject; QueryNode: TGmXmlNode) of object;
 
-  TOnMessage = procedure(Sender: TObject; XMLMessage: string) of object;
+  TOnMessage = procedure(Sender: TObject; Item: TJabberMessage) of object;
 
-  TOnIQ = procedure(Sender: TObject; XMLMessage: string) of object;
+  TOnIQ = procedure(Sender: TObject; QueryNode: TGmXmlNode) of object;
 
-  TOnPresence = procedure(Sender: TObject; Presence: string) of object;
+  TOnPresence = procedure(Sender: TObject; QueryNode: TGmXmlNode) of object;
 
   TOnLoginEror = procedure(Sender: TObject; Error: string) of object;
 
@@ -144,19 +161,261 @@ type
 
   TOnSubscribe = procedure(Sender: TObject; From, Nick: string) of object;
 
+  TOnWorkState = procedure(Sender: TObject; State: Boolean) of object;
+
   // Тип подписки
   TSubscribeType = (sbNone, sbTo, sbFrom, sbBoth);
 
   // тип сообщения
-  TMessageType = (mtChat, mtError, mtGroupchat, mtHeadline, mtNormal);
+  TMessageType = (mtChat, mtGroupchat);
 
   // Тип присутствия
-  TShowType = (stNormal, stAway, stChat, stDnd, stXa, stInvisible);
+  TShowType = (stNormal, stAway, stChat, stDnd, stXa, stInvisible, stOffline);
 
-  // описание типа контакта
+  // Описание типа контакта
   TContactType = (ctUser, ctChatRoom, ctTransport, ctNode);
 
+  TMechanisms = (mecDIGEST_MD5, mecPLAIN, mecNONE);
+
+  TMechanismStr = array[TMechanisms] of string;
+
+  TShowTypeStr = array[TShowType] of string;
+
+  TMessageTypeStr = array[TMessageType] of string;
+
+  TRosterItem = class
+    JID: string;
+    Name: string;
+    Subscription: string;
+    StatusText: string;
+    Status: TShowType;
+    Groups: TStringList;
+    Photo: string; //SHA-1 hash
+    LastMessage: record
+      ID: string;
+      Body: string;
+      Unread: Boolean;
+    end;
+    Avatar: TPngImage;
+    constructor Create; overload;
+    constructor Create(AJID, ANick: string); overload;
+    destructor Destroy; override;
+  end;
+
+  TOnRosterSet = procedure(Sender: TObject; Item: TRosterItem) of object;
+
+  TJabberVersion = record
+    Name: string;
+    OS: string;
+    Version: string;
+    Error: string;
+  end;
+
+  TAddressFlag = (afHome, afWork, afPostal, afParcel, afDom, afIntl, afPref);
+
+  TAddressFlags = set of TAddressFlag;
+
+  TTelFlag = (tfHome, tfWork, tfVoice, tfFAX, tfPager, tfMSG, tfCell, tfVideo, tfBBS, tfModem, tfISDN, tfPCS, tfPref);
+
+  TTelFlags = set of TTelFlag;
+
+  TEmailFlag = (efHome, efWork, efInternet, efPref, efX400);
+
+  TEmailFlags = set of TEmailFlag;
+
+  TAddress = record
+    Flags: TAddressFlags;
+    ExtAdd: string;
+    Street: string;
+    Locality: string;
+    Region: string;
+    PCode: string;
+    Country: string;
+  end;
+
+  TTel = record
+    Flags: TTelFlags;
+    Number: string;
+  end;
+
+  TEmail = record
+    Flags: TEmailFlags;
+    UserId: string;
+  end;
+
+  TOrg = record
+    Name: string;
+    OrgUnit: string;
+  end;
+
+  TPhoto = record
+    PhotoType: string;
+    BinVal: string;
+  end;
+
+  TName = record
+    FirstName: string;
+    MiddleName: string;
+    LastName: string;
+  end;
+
+  TVCard = record
+    FullName: string;
+    Name: TName;
+    NickName: string;
+    BirthDay: TDate;
+    URL: string;
+    Title: string;
+    Role: string;
+    Desc: string;
+    Address: array of TAddress;
+    Tel: array of TTel;
+    EMail: array of TEmail;
+    Organisation: TOrg;
+    Photo: TPhoto;
+    function AddAddress(Value: TAddress): Integer;
+    function AddEmail(Value: TEmail): Integer;
+    function AddTel(Value: TTel): Integer;
+    procedure ClearTel;
+    procedure ClearAdr;
+    procedure ClearEmail;
+  end;
+
+  //Такой способ позволяет не забыть добавить строковое представление значения
+var
+  MechanismStr: array[TMechanisms] of string = ('DIGEST-MD5', 'PLAIN', '');
+  ShowTypeStr: array[TShowType] of string = ('available', 'away', 'chat', 'dnd', 'xa', 'invisible', 'offline');
+  ShowTypeText: array[TShowType] of string = ('Доступен', 'Отошёл', 'Готов поболтать', 'Не беспокоить', 'Давно отошёл', 'Невидимый', 'Оффлайн');
+  MessageTypeStr: array[TMessageType] of string = ('chat', 'groupchat');
+  AddressFlagToStr: array[TAddressFlag] of string = ('HOME', 'WORK', 'POSTAL', 'PARCEL', 'DOM', 'INTL', 'PREF');
+  TelFlagToStr: array[TTelFlag] of string = ('HOME', 'WORK', 'VOICE', 'FAX', 'PAGER', 'MSG', 'CELL', 'VIDEO', 'BBS', 'MODEM', 'ISDN', 'PCS', 'PREF');
+  EMailFlagToStr: array[TEmailFlag] of string = ('HOME', 'WORK', 'INTERNET', 'PREF', 'X400');
+
+function XmlToDate(Value: string): TDate;
+
+function StrToShowType(Value: string): TShowType;
+
+function FromEscaping(Value: string): string;
+
+function ToEscaping(Value: string): string;
+
 implementation
+
+function ToEscaping(Value: string): string;
+begin
+  Result := Value;
+  Result := StringReplace(Result, '>', '&gt;', [rfReplaceAll, rfIgnoreCase]);
+  Result := StringReplace(Result, '&', '&amp;', [rfReplaceAll, rfIgnoreCase]);
+  Result := StringReplace(Result, '<', '&lt;', [rfReplaceAll, rfIgnoreCase]);
+  Result := StringReplace(Result, '"', '&quot;', [rfReplaceAll, rfIgnoreCase]);
+  Result := StringReplace(Result, '©', '&copy;', [rfReplaceAll, rfIgnoreCase]);
+  Result := StringReplace(Result, '™', '&trade;', [rfReplaceAll, rfIgnoreCase]);
+  Result := StringReplace(Result, '"', '&bdquo;', [rfReplaceAll, rfIgnoreCase]);
+  Result := StringReplace(Result, '"', '&ldquo;', [rfReplaceAll, rfIgnoreCase]);
+  Result := StringReplace(Result, '''', '&apos;', [rfReplaceAll, rfIgnoreCase]);
+  Result := StringReplace(Result, ':\'')', ':'')', [rfReplaceAll, rfIgnoreCase]);
+  Result := StringReplace(Result, ':\''(', ':''(', [rfReplaceAll, rfIgnoreCase]);
+  Result := StringReplace(Result, ':-\\', ':-\', [rfReplaceAll, rfIgnoreCase]);
+  Result := StringReplace(Result, '\\m/', '\m/', [rfReplaceAll, rfIgnoreCase]);
+end;
+
+function FromEscaping(Value: string): string;
+begin
+  Result := Value;
+  Result := StringReplace(Result, '&gt;', '>', [rfReplaceAll, rfIgnoreCase]);
+  Result := StringReplace(Result, '&amp;', '&', [rfReplaceAll, rfIgnoreCase]);
+  Result := StringReplace(Result, '&lt;', '<', [rfReplaceAll, rfIgnoreCase]);
+  Result := StringReplace(Result, '&quot;', '"', [rfReplaceAll, rfIgnoreCase]);
+  Result := StringReplace(Result, '&copy;', '©', [rfReplaceAll, rfIgnoreCase]);
+  Result := StringReplace(Result, '&trade;', '™', [rfReplaceAll, rfIgnoreCase]);
+  Result := StringReplace(Result, '&bdquo;', '"', [rfReplaceAll, rfIgnoreCase]);
+  Result := StringReplace(Result, '&ldquo;', '"', [rfReplaceAll, rfIgnoreCase]);
+  Result := StringReplace(Result, '&apos;', '''', [rfReplaceAll, rfIgnoreCase]);
+  Result := StringReplace(Result, ':'')', ':\'')', [rfReplaceAll, rfIgnoreCase]);
+  Result := StringReplace(Result, ':''(', ':\''(', [rfReplaceAll, rfIgnoreCase]);
+  Result := StringReplace(Result, ':-\', ':-\\', [rfReplaceAll, rfIgnoreCase]);
+  Result := StringReplace(Result, '\m/', '\\m/', [rfReplaceAll, rfIgnoreCase]);
+end;
+
+function StrToShowType(Value: string): TShowType;
+var
+  i: Integer;
+begin
+  Value := LowerCase(Value);
+  Result := stNormal;
+  for i := Low(Ord(stNormal)) to High(Ord(stInvisible)) do
+    if ShowTypeStr[TShowType(i)] = Value then
+      Exit(TShowType(i));
+end;
+
+function XmlToDate(Value: string): TDate;
+begin
+  if Value = '' then
+    Result := 0
+  else
+    Result := StrToDate(Copy(Value, 9, 2) + '.' + Copy(Value, 6, 2) + '.' + Copy(Value, 1, 4));
+end;
+
+{ TRosterItem }
+
+constructor TRosterItem.Create;
+begin
+  inherited;
+  Avatar := TPngImage.Create;
+  Groups := TStringList.Create;
+end;
+
+constructor TRosterItem.Create(AJID, ANick: string);
+begin
+  Create;
+  JID := AJID;
+  Name := ANick;
+end;
+
+destructor TRosterItem.Destroy;
+begin
+  inherited;
+  Avatar.Free;
+  Groups.Free;
+end;
+
+{ TVCard }
+
+function TVCard.AddAddress(Value: TAddress): Integer;
+begin
+  SetLength(Address, Length(Address) + 1);
+  Result := High(Address);
+  Address[Result] := Value;
+end;
+
+function TVCard.AddEmail(Value: TEmail): Integer;
+begin
+  SetLength(EMail, Length(EMail) + 1);
+  Result := High(EMail);
+  EMail[Result] := Value;
+end;
+
+function TVCard.AddTel(Value: TTel): Integer;
+begin
+  SetLength(Tel, Length(Tel) + 1);
+  Result := High(Tel);
+  Tel[Result] := Value;
+end;
+
+procedure TVCard.ClearAdr;
+begin
+  SetLength(Address, 0);
+end;
+
+procedure TVCard.ClearEmail;
+begin
+  SetLength(EMail, 0);
+end;
+
+procedure TVCard.ClearTel;
+begin
+  SetLength(Tel, 0);
+end;
 
 end.
 
