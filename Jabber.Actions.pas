@@ -36,6 +36,16 @@ type
     property Success: Boolean read FSuccess;
   end;
 
+  TActionPresenceWating = class(TXMPPActionPresence)
+  private
+    FExecuted: Boolean;
+    FSuccess: Boolean;
+  public
+    constructor Create(AOwner: TXMPPActions);
+    property Executed: Boolean read FExecuted;
+    property Success: Boolean read FSuccess;
+  end;
+
   TXMPPActionIQResponse = class(TXMPPAction)
   public
     constructor Create(AOwner: TXMPPActions);
@@ -72,7 +82,6 @@ type
   TActionIQContactDelete = class(TXMPPActionIQ)
   private
     FJID: string;
-    FOnResult: TOnActionResult;
   public
     constructor Create(AOwner: TXMPPActions; JID: string);
     function Execute(Node: TGmXmlNode): Boolean; override;
@@ -151,6 +160,25 @@ type
     property Version: TJabberVersion read FVersion;
   end;
 
+  TActionIQConfList = class(TActionIQWating)
+  private
+    FList: TConfList;
+  public
+    constructor Create(AOwner: TXMPPActions; Server, Last: string);
+    function Execute(Node: TGmXmlNode): Boolean; override;
+    property Result: TConfList read FList;
+  end;
+
+  TActionPresenceToConf = class(TActionPresenceWating)
+  private
+    FTo, FID, FNick: string;
+    FResult: TConfPresence;
+  public
+    constructor Create(AOwner: TXMPPActions; ATo, ANick: string);
+    function Execute(Node: TGmXmlNode): Boolean; override;
+    property Result: TConfPresence read FResult;
+  end;
+
   TActionIQVCard = class(TActionIQWating)
   private
     FVCard: TVCard;
@@ -170,6 +198,11 @@ type
     function Execute(Node: TGmXmlNode): Boolean; override;
   end;
 
+  TActionIQResponseDiscoItems = class(TXMPPActionIQResponse)
+  public
+    function Execute(Node: TGmXmlNode): Boolean; override;
+  end;
+
   TActionIQResponsePing = class(TXMPPActionIQResponse)
   public
     function Execute(Node: TGmXmlNode): Boolean; override;
@@ -180,12 +213,20 @@ type
     function Execute(Node: TGmXmlNode): Boolean; override;
   end;
 
+  TActionIQResponseLast = class(TXMPPActionIQResponse)
+  public
+    function Execute(Node: TGmXmlNode): Boolean; override;
+  end;
+
   TActionIQRosterSet = class(TXMPPActionIQResponse)
   public
     function Execute(Node: TGmXmlNode): Boolean; override;
   end;
 
 implementation
+
+uses
+  System.DateUtils, Xml.xmlutil;
 
 { TXMPPIQAction }
 
@@ -222,6 +263,17 @@ end;
 { TActionIQWating }
 
 constructor TActionIQWating.Create(AOwner: TXMPPActions);
+begin
+  inherited Create(AOwner);
+  Timeout := 10 * 1000;
+  FreeAfterTimeout := True;
+  FSuccess := False;
+  FExecuted := False;
+end;
+
+{ TActionPresenceWating }
+
+constructor TActionPresenceWating.Create(AOwner: TXMPPActions);
 begin
   inherited Create(AOwner);
   Timeout := 10 * 1000;
@@ -317,14 +369,10 @@ begin
   Result := True;
   if (Node.Params.Values['type'] = 'result') then
   begin
-    if Assigned(FOnResult) then
-      FOnResult(Self, True);
     ShowMessage('Контакт удалён');
   end
   else
   begin
-    if Assigned(FOnResult) then
-      FOnResult(Self, False);
     ShowMessage('Контакт НЕ удалён');
   end;
 end;
@@ -526,7 +574,13 @@ function TActionMessage.Execute(Node: TGmXmlNode): Boolean;
 var
   Item: TJabberMessage;
 begin
+  if not Owner.Jabber.RosetReceived then
+    Exit(False);
   Result := True;
+  //Пока пропускаем event pub
+  if Node.Children.NodeExists('event') then
+    Exit;
+
   Item.ID := Node.Params.Values['id'];
   Item.From := Node.Params.Values['from'];
   Item.ToJID := LoginFromJID(Node.Params.Values['to']);
@@ -535,8 +589,14 @@ begin
     Item.Body := FromEscaping(Node.Children.NodeByName['body'].AsString);
   if Node.Children.NodeExists('thread') then
     Item.Thread := Node.Children.NodeByName['thread'].AsString;
+  if Node.Children.NodeExists('delay') then
+  begin
+    Item.Delay := True;
+    Item.DelayDate := ISO8601ToDate(Node.Children.NodeByName['delay'].Params.Values['stamp'], False);
+  end;
   if Node.Children.NodeExists('subject') then
     Item.Subject := Node.Children.NodeByName['subject'].AsString;
+
   if Node.Children.NodeExists('displayed') then
   begin
     Item.ID := Node.Children.NodeByName['displayed'].Params.Values['id'];
@@ -544,6 +604,14 @@ begin
   end
   else
     Item.Displayed := False;
+
+  if Node.Children.NodeExists('attention') then
+  begin
+    Item.Attention := True;
+  end
+  else
+    Item.Attention := False;
+
   if Node.Children.NodeExists('received') then
   begin
     Item.ID := Node.Children.NodeByName['received'].Params.Values['id'];
@@ -551,6 +619,14 @@ begin
   end
   else
     Item.Received := False;
+
+  if Node.Children.NodeWithParamExists('x', 'xmlns', XMLNS_XOOB) then
+    with Node.Children.NodeWithParam('x', 'xmlns', XMLNS_XOOB) do
+    begin
+      if Children.NodeExists('url') then
+        Item.XMLNS_XOOB.URL := Children.NodeByName['url'].AsString;
+    end;
+
   Owner.Jabber.DoGetMessage(Owner.Jabber, Item);
 end;
 
@@ -610,12 +686,23 @@ end;
 
 function TActionIQResponseTime.Execute(Node: TGmXmlNode): Boolean;
 begin
-  if not Assigned(Node.Children.NodeByName['query']) then
-    Exit(False);
-  if Node.Children.NodeByName['query'].Params.Values['xmlns'] <> XMLNS_TIME then
-    Exit(False);
-  Result := True;
-  Owner.Jabber.SendTime(Node.Params.Values['from'], Node.Params.Values['id']);
+  Result := False;
+  if Assigned(Node.Children.NodeByName['query']) then
+  begin
+    if Node.Children.NodeByName['query'].Params.Values['xmlns'] = XMLNS_TIME then
+    begin
+      Result := True;
+      Owner.Jabber.SendTime(Node.Params.Values['from'], Node.Params.Values['id']);
+    end
+  end
+  else if Assigned(Node.Children.NodeByName['time']) then
+  begin
+    if Node.Children.NodeByName['time'].Params.Values['xmlns'] = XMLNS_URN_TIME then
+    begin
+      Result := True;
+      Owner.Jabber.SendTimeURN(Node.Params.Values['from'], Node.Params.Values['id']);
+    end
+  end;
 end;
 
 { TActionIQRosterSet }
@@ -853,12 +940,117 @@ end;
 
 function TActionIQResponseDiscoInfo.Execute(Node: TGmXmlNode): Boolean;
 begin
+  if Node.Params.Values['type'] <> 'get' then
+    Exit(False);
   if not Assigned(Node.Children.NodeByName['query']) then
     Exit(False);
   if Node.Children.NodeByName['query'].Params.Values['xmlns'] <> XMLNS_DISCOINFO then
     Exit(False);
   Result := True;
   Owner.Jabber.SendDiscoInfo(Node.Params.Values['from'], Node.Params.Values['id']);
+end;
+
+{ TActionIQResponseLast }
+
+function TActionIQResponseLast.Execute(Node: TGmXmlNode): Boolean;
+begin
+  if not Assigned(Node.Children.NodeByName['query']) then
+    Exit(False);
+  if Node.Children.NodeByName['query'].Params.Values['xmlns'] <> XMLNS_LAST then
+    Exit(False);
+  Result := True;
+  Owner.Jabber.SendLast(Node.Params.Values['from'], Node.Params.Values['id']);
+end;
+
+{ TActionIQResponseDiscoItems }
+
+function TActionIQResponseDiscoItems.Execute(Node: TGmXmlNode): Boolean;
+begin
+  if Node.Params.Values['type'] <> 'get' then
+    Exit(False);
+  if not Assigned(Node.Children.NodeByName['query']) then
+    Exit(False);
+  if Node.Children.NodeByName['query'].Params.Values['xmlns'] <> XMLNS_DISCOITEMS then
+    Exit(False);
+  Result := True;
+  Owner.Jabber.SendDiscoItems(Node.Params.Values['from'], Node.Params.Values['id']);
+end;
+
+{ TActionPresenceToConf }
+
+constructor TActionPresenceToConf.Create(AOwner: TXMPPActions; ATo, ANick: string);
+begin
+  inherited Create(AOwner);
+  FTo := ATo;
+  FNick := ANick;
+  FResult.Error := False;
+  FID := Owner.Jabber.SendEnterChat(FTo, FNick, '');
+end;
+
+function TActionPresenceToConf.Execute(Node: TGmXmlNode): Boolean;
+begin
+  if Node.Params.Values['id'] <> FID then
+    Exit(False);
+  Result := False;
+  FExecuted := True;
+  if Node.Params.Values['type'] = 'error' then
+  begin
+    FResult.Error := True;
+    if Node.Children.NodeExists('error') then
+      with Node.Children.NodeByName['error'] do
+      begin
+        FResult.ErrorData.Code := Params.Values['code'];
+        FResult.ErrorData.ErrorType := Params.Values['type'];
+        if Children.NodeExists('conflict') then
+          with Children.NodeByName['conflict'] do
+            FResult.ErrorData.Conflict := Params.Values['xmlns'];
+        if Children.NodeExists('text') then
+          with Children.NodeByName['text'] do
+            FResult.ErrorData.Text := AsString;
+      end;
+    Exit;
+  end;
+end;
+
+{ TActionIQConfList }
+
+constructor TActionIQConfList.Create(AOwner: TXMPPActions; Server, Last: string);
+begin
+  inherited Create(AOwner);
+  FList := TConfList.Create;
+  ID := Owner.Jabber.SendGetDiscoInfo(Server, Last);
+end;
+
+function TActionIQConfList.Execute(Node: TGmXmlNode): Boolean;
+var
+  i: Integer;
+  Item: TConfItem;
+  Query: TGmXmlNode;
+begin
+  if Node.Params.Values['id'] <> FID then
+    Exit(False);
+  Result := True;
+  FExecuted := True;
+  if Node.Children.NodeExists('query') then
+  begin
+    Query := Node.Children.NodeByName['query'];
+    for i := 0 to Query.Children.Count - 1 do
+      with Query.Children[i] do
+        if Query.Children[i].Name = 'item' then
+        begin
+          Item.JID := Params.Values['jid'];
+          Item.Name := Params.Values['name'];
+          FList.Add(Item);
+        end;
+    if Query.Children.NodeExists('set') then
+      with Query.Children.NodeByName['set'] do
+      begin
+        if Children.NodeExists('last') then
+          FList.ConfLast := Children.NodeByName['last'].AsString;
+        if Children.NodeExists('count') then
+          FList.ConfCount := Children.NodeByName['count'].AsInteger;
+      end;
+  end;
 end;
 
 end.

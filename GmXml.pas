@@ -105,6 +105,8 @@ type
     property Count: integer read GetCount;
     property CurrentNode: TGmXmlNode read FCurrentNode write FCurrentNode;
     function NodeExists(AName: string): Boolean;
+    function NodeWithParamExists(AName, AParam, AValue: string): Boolean;
+    function NodeWithParam(AName, AParam, AValue: string): TGmXmlNode;
     property Node[index: integer]: TGmXmlNode read GetNode write SetNode; default;
     property NodeByName[AName: string]: TGmXmlNode read GetNodeByName write SetNodeByName;
     property Root: TGmXmlNode read GetRoot;
@@ -523,6 +525,32 @@ begin
   end;
 end;
 
+function TGmXmlNodeList.NodeWithParam(AName, AParam, AValue: string): TGmXmlNode;
+var
+  ICount: integer;
+begin
+  Result := nil;
+  for ICount := 0 to Count - 1 do
+  begin
+    if Node[ICount].Name = AName then
+      if Node[ICount].Params.Values[AParam] = AValue then
+        Exit(Node[ICount]);
+  end;
+end;
+
+function TGmXmlNodeList.NodeWithParamExists(AName, AParam, AValue: string): Boolean;
+var
+  ICount: integer;
+begin
+  Result := False;
+  for ICount := 0 to Count - 1 do
+  begin
+    if Node[ICount].Name = AName then
+      if Node[ICount].Params.Values[AParam] = AValue then
+        Exit(True);
+  end;
+end;
+
 procedure TGmXmlNodeList.SetNodeByName(AName: string; ANode: TGmXmlNode);
 var
   ICount: integer;
@@ -647,6 +675,7 @@ end;
 procedure TGmXml.SetAsText(Value: string);
 var
   ACursor: integer;
+  AInString: Boolean;
   AText: string;
   ATag: string;
   AValue: string;
@@ -662,8 +691,11 @@ begin
     begin
       // reading a tag
       ATag := '<';
-      while Value[ACursor] <> '>' do
+      AInString := False;
+      while (Value[ACursor] <> '>') or AInString do
       begin
+        if Value[ACursor] = '"' then
+          AInString := not AInString;
         Inc(ACursor);
         ATag := ATag + Value[ACursor];
       end;

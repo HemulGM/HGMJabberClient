@@ -4,7 +4,7 @@ interface
 
 uses
   Vcl.Controls, Winapi.Messages, System.SysUtils, System.Classes, GmXml,
-  System.Generics.Collections, Vcl.Imaging.pngimage;
+  System.Generics.Collections, Vcl.Imaging.pngimage, Vcl.Graphics;
 
 const
   XMLNS_AUTH = 'jabber:iq:auth'; //unusable
@@ -12,6 +12,7 @@ const
   XMLNS_REGISTER = 'jabber:iq:register';
   XMLNS_LAST = 'jabber:iq:last';
   XMLNS_TIME = 'jabber:iq:time';
+  XMLNS_URN_TIME = 'urn:xmpp:time';
   XMLNS_VERSION = 'jabber:iq:version';
   XMLNS_PING = 'jabber:iq:ping';
   XMLNS_IQOOB = 'jabber:iq:oob';
@@ -51,6 +52,7 @@ const
   XMLNS_XMPP_BIND = 'urn:ietf:params:xml:ns:xmpp-bind';
   XMLNS_XMPP_SESSION = 'urn:ietf:params:xml:ns:xmpp-session';
   XMLNS_CHATMARKERS0 = 'urn:xmpp:chat-markers:0';
+  XMLNS_ATTENTION = 'urn:xmpp:attention:0';
   XMLNS_COMMANDS = 'http://jabber.org/protocol/commands';
   XMLNS_CAPS = 'http://jabber.org/protocol/caps';
   XMLNS_ADDRESS = 'http://jabber.org/protocol/address';
@@ -58,6 +60,7 @@ const
   XMLNS_XHTML = 'http://www.w3.org/1999/xhtml';
   XMLNS_XML = 'http://www.w3.org/XML/1998/namespace';
   XMLNS_SHIM = 'http://jabber.org/protocol/shim';
+  XMLNS_RSM = 'http://jabber.org/protocol/rsm';
   XMLNS_NICK = 'http://jabber.org/protocol/nick';
   XMLNS_STREAMS = 'http://etherx.jabber.org/streams';
   XMLNS_ITEMCHALLENGE = 'challenge';
@@ -66,6 +69,7 @@ const
   XMLNS_ITEMMESSAGE = 'message';
   XMLNS_ITEMPRESENCE = 'presence';
   XMLNS_IQUERY = 'iq';
+  XMLNS_XMPP_TIME = 'time';
 
   // константы видов IM
   JC_STANDART = $00000000;
@@ -122,11 +126,26 @@ type
     Subject: string;
     ToJID: string;
     Body: string;
-    Delay: string;
+    Delay: Boolean;
+    DelayDate: TDateTime;
     MessageType: string;
     Thread: string;
     Displayed: Boolean;
-    Received : Boolean;
+    Attention: Boolean;
+    Received: Boolean;
+    XMLNS_XOOB: record
+      URL: string;
+    end;
+  end;
+
+  TConfItem = record
+    Name: string;
+    JID: string;
+  end;
+
+  TConfList = class(TList<TConfItem>)
+    ConfLast: string;
+    ConfCount: Integer;
   end;
 
   TErrorType = (ERR_SOCKET, ERR_INTERNAL, ERR_WARNING, ERR_PROXY, ERR_PROTOCOL, ERR_CONNTIMEOUT, ERR_LOGIN);
@@ -167,7 +186,7 @@ type
   TSubscribeType = (sbNone, sbTo, sbFrom, sbBoth);
 
   // тип сообщения
-  TMessageType = (mtChat, mtGroupchat);
+  TMessageType = (mtChat, mtGroupchat, mtHeadLine);
 
   // Тип присутствия
   TShowType = (stNormal, stAway, stChat, stDnd, stXa, stInvisible, stOffline);
@@ -196,10 +215,16 @@ type
       Body: string;
       Unread: Boolean;
     end;
+    GroupData: record
+      Affiliation: string;
+      Role: string;
+    end;
+    Color: TColor;
     Avatar: TPngImage;
     constructor Create; overload;
     constructor Create(AJID, ANick: string); overload;
     destructor Destroy; override;
+    function GetDisplayStatus: string;
   end;
 
   TOnRosterSet = procedure(Sender: TObject; Item: TRosterItem) of object;
@@ -281,12 +306,24 @@ type
     procedure ClearEmail;
   end;
 
+  TConfPresence = record
+    Error: Boolean;
+    ErrorData: record
+      Code: string;
+      ErrorType: string;
+      Conflict: string;
+      Text: string;
+    end;
+    Affiliation: string;
+    Role: string;
+  end;
+
   //Такой способ позволяет не забыть добавить строковое представление значения
 var
   MechanismStr: array[TMechanisms] of string = ('DIGEST-MD5', 'PLAIN', '');
   ShowTypeStr: array[TShowType] of string = ('available', 'away', 'chat', 'dnd', 'xa', 'invisible', 'offline');
   ShowTypeText: array[TShowType] of string = ('Доступен', 'Отошёл', 'Готов поболтать', 'Не беспокоить', 'Давно отошёл', 'Невидимый', 'Оффлайн');
-  MessageTypeStr: array[TMessageType] of string = ('chat', 'groupchat');
+  MessageTypeStr: array[TMessageType] of string = ('chat', 'groupchat', 'headline');
   AddressFlagToStr: array[TAddressFlag] of string = ('HOME', 'WORK', 'POSTAL', 'PARCEL', 'DOM', 'INTL', 'PREF');
   TelFlagToStr: array[TTelFlag] of string = ('HOME', 'WORK', 'VOICE', 'FAX', 'PAGER', 'MSG', 'CELL', 'VIDEO', 'BBS', 'MODEM', 'ISDN', 'PCS', 'PREF');
   EMailFlagToStr: array[TEmailFlag] of string = ('HOME', 'WORK', 'INTERNET', 'PREF', 'X400');
@@ -343,7 +380,7 @@ var
 begin
   Value := LowerCase(Value);
   Result := stNormal;
-  for i := Low(Ord(stNormal)) to High(Ord(stInvisible)) do
+  for i := Ord(stNormal) to Ord(stOffline) do
     if ShowTypeStr[TShowType(i)] = Value then
       Exit(TShowType(i));
 end;
@@ -358,9 +395,18 @@ end;
 
 { TRosterItem }
 
+function TRosterItem.GetDisplayStatus: string;
+begin
+  if (StatusText.IsEmpty) or (Status = stOffline) then
+    Result := ShowTypeText[Status]
+  else
+    Result := StatusText;
+end;
+
 constructor TRosterItem.Create;
 begin
   inherited;
+  Status := stOffline;
   Avatar := TPngImage.Create;
   Groups := TStringList.Create;
 end;

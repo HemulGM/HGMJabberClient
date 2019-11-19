@@ -5,10 +5,18 @@ interface
 uses
   System.SysUtils, System.Classes, IdHashMessageDigest, IdCoderMime, Vcl.Dialogs,
   Vcl.Controls, Jabber.Types, GmXML, Winapi.Windows, IdGlobal, System.StrUtils,
-  System.Generics.Collections, System.Win.ScktComp;
+  System.Generics.Collections, System.Win.ScktComp, HGM.Controls.VirtualTable;
 
 type
   TJabberClient = class;
+
+  TXMPPItem = record
+    Data: string;
+    Date: TDateTime;
+  end;
+
+  TXMPPItems = class(TTableData<TXMPPItem>)
+  end;
 
   TXMPPActions = class;
 
@@ -92,6 +100,7 @@ type
     FOnRosterSet: TOnRosterSet;
     FVCard: TVCard;
     FOnWorkState: TOnWorkState;
+    FInParse: Boolean;
     function GetJID: string;
     procedure ParseReceive(Text: string);
     procedure SetJID(const Value: string);
@@ -108,9 +117,11 @@ type
     procedure SetJabberClientVersion(const Value: string);
     procedure SetInReceiveProcess(const Value: Boolean);
     function GetReceiveProcess: Boolean;
-    property InReceiveProcess: Boolean read GetReceiveProcess write SetInReceiveProcess;
+    function ClientName: string;
+    property InProcess: Boolean read GetReceiveProcess write SetInReceiveProcess;
   protected
     XMLStr: string;
+    FXMPPItems: TXMPPItems;
     function GetUniqueID: string;
     function GetSASLResponse(AStr: string): string;
   public
@@ -119,6 +130,8 @@ type
     destructor Destroy; override;
     function GetVersion(AJID: string): TJabberVersion;
     function GetVCard(AJID: string): TVCard;
+    function ConferenceEnter(AConf, ANick: string): TConfPresence;
+    function GetListOfConference(Server, Last: string): TConfList;
     function CheckAccount: Boolean;
     function DeleteBadSymbols(Value: string): string;
     function SendAddSetContact(Item: TRosterItem): string;
@@ -127,9 +140,11 @@ type
     function SendDeleteContact(AJID: string): string;
     function SendGetBookmarks: string;
     function SendGetVCard(AJID: string): string;
+    function SendGetDiscoInfo(AServer, Last: string): string;
     function SendGetVersion(AJID: string): string;
-    function SendGetRoster: string;
     function SendSetBind: string;
+    function SendEnterChat(AConf, ANick, APassword: string): string;
+    function SendGetRoster: string;
     function SendSetSession: string;
     function StrForParsing(var Value: string): string;
     function AddContact(Item: TRosterItem): Boolean; overload;
@@ -157,25 +172,35 @@ type
     procedure SendBind;
     procedure SendData(Str: string);
     function SendMessage(AJID, AMessage: string; MessageType: TMessageType): string;
+    procedure SendIQResult(ID: string);
+    procedure SendAttention(AJID: string; AMessage: string = '');
+    function SendPresence(Target: string = ''): string; overload;
+    procedure SendPresenceUnavailable(Target: string); overload;
     procedure SendPing(AJID, ID: string);
+    procedure SendLast(AJID, ID: string);
     procedure SendReadMessage(AJID, MessageID: string);
     procedure SendResponse(XMLNX, ResponseValue: string);
-    procedure SendIQResult(ID: string);
     procedure SendSASLResponse(ChallengeValue: string);
     procedure SendSession;
     procedure SendStreamStart;
     procedure SendSubscribeAccept(AJID: string);
     procedure SendSubscribeCancel(AJID: string);
     procedure SendTime(AJID, ID: string);
+    procedure SendTimeURN(AJID, ID: string);
     procedure SendUnsubscribe(AJID: string);
     procedure SendVersion(AJID, ID: string);
     procedure SendDiscoInfo(AJID, ID: string);
+    procedure SendDiscoItems(AJID, ID: string);
     procedure SetPresence;
     procedure StartSetPresence;
     procedure UpdateImageHash(BinVal: string);
     property Actions: TXMPPActions read FXMPPActions;
     property Connected: Boolean read FConnected;
     property Online: Boolean read FJabberOnLine;
+    property VCard: TVCard read FVCard;
+    property PhotoHash: string read FImageVCardSHA write FImageVCardSHA;
+    property XMPPItems: TXMPPItems read FXMPPItems;
+    property RosetReceived: Boolean read FRosetReceived;
   published
     property JabberPort: Word read FJabberPort write FJabberPort;
     property JID: string read GetJID write SetJID;
@@ -206,22 +231,42 @@ type
     property UserStatusText: string read FUserStatusText write SetUserStatusText;
     property JabberClientName: string read FJabberClientName write SetJabberClientName;
     property JabberClientVersion: string read FJabberClientVersion write SetJabberClientVersion;
-    property VCard: TVCard read FVCard;
   end;
 
 function LoginFromJID(JID: string): string;
+
+function NickFromJID(JID: string): string;
+
+function NickFromConfJID(JID: string): string;
 
 function GetMechainsms(XMLItem: TGmXmlNode): TMechanisms;
 
 implementation
 
 uses
-  Math, Jabber.Actions, IM.Main, Vcl.Forms, IM.Tool.Console, Base64Unit;
+  Math, Jabber.Actions, IM.Main, Vcl.Forms, IM.Tool.Console, Base64Unit,
+  System.DateUtils, System.TimeSpan;
 
 function LoginFromJID(JID: string): string;
 begin
   if Pos('/', JID) > 1 then
     Result := Copy(JID, 1, Pos('/', JID) - 1)
+  else
+    Result := JID;
+end;
+
+function NickFromJID(JID: string): string;
+begin
+  if Pos('@', JID) > 1 then
+    Result := Copy(JID, 1, Pos('@', JID) - 1)
+  else
+    Result := JID;
+end;
+
+function NickFromConfJID(JID: string): string;
+begin
+  if Pos('/', JID) > 1 then
+    Result := Copy(JID, Pos('/', JID) + 1, Length(JID))
   else
     Result := JID;
 end;
@@ -270,7 +315,7 @@ procedure TJabberClient.Connect;
 begin
   if not Connected then
   begin
-    InReceiveProcess := True;
+    InProcess := True;
     FSocket.Host := UserServer;
     FSocket.Port := JabberPort;
     FSocket.OnError := _OnConnectError;
@@ -289,7 +334,9 @@ constructor TJabberClient.Create(AOwner: TComponent);
 begin
   inherited;
   FSocket := TClientSocket.Create(nil);
+  FXMPPItems := TXMPPItems.Create;
   FInReceiveProcess := 0;
+  FInParse := False;
   FRosetReceived := False;
   FWaitSetPresence := False;
   FUserServer := 'jabber.ru';
@@ -319,10 +366,16 @@ begin
   FXMPPActions.Add(TActionIQResponseVersion.Create(FXMPPActions));
   //Обработка при получении ping
   FXMPPActions.Add(TActionIQResponsePing.Create(FXMPPActions));
+  //Обработка при получении time
+  FXMPPActions.Add(TActionIQResponseTime.Create(FXMPPActions));
   //Обработка при получении инф. об изменении контакта
   FXMPPActions.Add(TActionIQRosterSet.Create(FXMPPActions));
   //Обработка при запросе возможностей клиента
   FXMPPActions.Add(TActionIQResponseDiscoInfo.Create(FXMPPActions));
+  //Обработка при запросе сущностей
+  FXMPPActions.Add(TActionIQResponseDiscoItems.Create(FXMPPActions));
+  //Обработка при запросе Last Activity
+  FXMPPActions.Add(TActionIQResponseLast.Create(FXMPPActions));
 end;
 
 procedure TJabberClient.SendStreamStart;
@@ -460,11 +513,36 @@ begin
   end;
 end;
 
+procedure TJabberClient.SendTimeURN(AJID, ID: string);
+begin
+  with TGmXML.Create do
+  begin
+    with Nodes.AddOpenTag('iq') do
+    begin
+      Params.Values['type'] := 'result';
+      Params.Values['to'] := AJID;
+      Params.Values['from'] := JID + '/' + Resource;
+      Params.Values['id'] := ID;
+      with Children.AddOpenTag('time') do
+      begin
+        Params.Values['xmlns'] := XMLNS_URN_TIME;
+        Children.AddOpenTag('utc').AsString := FormatDateTime('YYYY-MM-DD''T''HH:MM:SS''Z''', TTimeZone.local.ToUniversalTime(Now));
+        Children.AddCloseTag;
+
+        Children.AddOpenTag('tzo').AsString := TTimeZone.local.UtcOffset.ToString;
+        Children.AddCloseTag;
+      end;
+    end;
+    SendData(Text);
+    Free;
+  end;
+end;
+
 procedure TJabberClient._OnConnect(Sender: TObject; Socket: TCustomWinSocket);
 begin
   FConnected := True;
   SendStreamStart;
-  InReceiveProcess := False;
+  InProcess := False;
   if Assigned(FOnConnect) then
     FOnConnect(Self);
 end;
@@ -474,7 +552,7 @@ begin
   FConnected := False;
   FRosetReceived := False;
   FJabberOnLine := False;
-  InReceiveProcess := False;
+  InProcess := False;
   if Assigned(FOnDisconnect) then
     FOnDisconnect(Self);
 end;
@@ -505,6 +583,7 @@ end;
 
 destructor TJabberClient.Destroy;
 begin
+  FXMPPItems.Free;
   FXMPPActions.Clear;
   FXMPPActions.Free;
   FSocket.Free;
@@ -711,11 +790,11 @@ var
   XMLItem: TGmXmlNode;
   ItemName: string;
   Handled: Boolean;
+  Item: TXMPPItem;
+  i: Integer;
 begin
   XMLStr := XMLStr + UTF8ToString(Text);
-  {if FInReceiveProcess then
-    Exit;  }
-  InReceiveProcess := True;
+  InProcess := True;
   while XMLStr <> '' do
   begin
     // В CheckStr вытаскиваем завершенные XML данные для дальнейшего разбора
@@ -735,54 +814,76 @@ begin
       if Handled then
         Continue;
     end;
+    //Если данные не были перехвачены, то добавляем их в очередь
+    Item.Data := CheckedStr;
+    Item.Date := Now;
+    FXMPPItems.Add(Item);
+  end;
 
+  //Пока есть что-то в очереди, проходим по очереди и пытаемся найти обработчик данных
+  //Забираем элемент из очереди
+  //Если обработчик найден, то начинаем обработку и прерываем очередь
+  //Если обработчик не найден, то возвращаем элемент в очередь
+  //Если ни для кого обработчик не найден, значит мы что-то ждём, прерываем весь цикл обработки
+  //Вернёмся сюда, когда что-то придёт
+  while FXMPPItems.Count > 0 do
+  begin
+    Handled := False;
     XMLParser := TGmXML.Create;
-    try
-      XMLParser.Text := CheckedStr;
-      CheckedStr := '';
-      if XMLParser.Nodes.Count <= 0 then
-        Break; //Почему-то пусто
+    for i := 0 to FXMPPItems.Count - 1 do
+    begin
+      try
+        Handled := True;
+        Item := FXMPPItems[i];
+        FXMPPItems.Delete(i);
+        XMLParser.Nodes.Clear;
+        XMLParser.Text := Item.Data;
+        XMLItem := XMLParser.Nodes.Root;
 
-      XMLItem := XMLParser.Nodes.Root;
+        //Обработчик
+        if FXMPPActions.Execute(XMLItem) then
+        begin
+          Break;
+        end;
 
-      //Обработчик
-      if FXMPPActions.Execute(XMLItem) then
-        Continue;
+        //Те, что не были обработаны
+        ItemName := XMLItem.Name;
+        if ItemName = XMLNS_IQUERY then
+        begin
+          DoGetIQ(Self, XMLItem);
+          Break;
+        end;
 
-      //Отдадим остальное выше
-      ItemName := XMLItem.Name;
+        if ItemName = XMLNS_STREAM then
+        begin
+          Break;
+        end;
 
-      if ItemName = XMLNS_IQUERY then
-      begin
-        DoGetIQ(Self, XMLItem);
-        Continue;
+        if ItemName = XMLNS_ITEMPRESENCE then
+        begin
+          if FRosetReceived then
+          begin
+            DoGetPresence(Self, XMLItem);
+            Break;
+          end;
+        end;
+
+        //Если ни мы, ни код выше не обработал данные (debug)
+        FOnReceiveData(Self, 'Not handled :' + ItemName, Handled);
+        FXMPPItems.Add(Item);
+        Handled := False;
+      except
+        on E: Exception do
+        begin
+          DoError(Self, E.Message);
+        end
       end;
-
-      if ItemName = XMLNS_ITEMPRESENCE then
-      begin
-        while not FRosetReceived do
-          Application.ProcessMessages;
-        DoGetPresence(Self, XMLItem);
-        Continue;
-      end;
-
-      if ItemName = XMLNS_STREAM then
-      begin
-        //DoGetPresence(Self, XMLItem);
-        Continue;
-      end;
-
-      //Если ни мы, ни код выше не обработал данные
-      FOnReceiveData(Self, 'Not handled :' + ItemName, Handled);
-    except
-      on E: Exception do
-      begin
-        DoError(Self, E.Message);
-      end
     end;
     XMLParser.Free;
+    if not Handled then
+      Break;
   end;
-  InReceiveProcess := False;
+  InProcess := False;
 end;
 
 function TJabberClient.RenameContact(Item: TRosterItem): Boolean;
@@ -864,6 +965,11 @@ begin
   end;
 end;
 
+function TJabberClient.ClientName: string;
+begin
+  Result := 'IMJabber';
+end;
+
 procedure TJabberClient.SendDiscoInfo(AJID, ID: string);
 begin
   with TGmXML.Create do
@@ -877,11 +983,85 @@ begin
       with Children.AddOpenTag('query') do
       begin
         Params.Values['xmlns'] := XMLNS_DISCOINFO;
+        with Children.AddOpenTag('identity') do
+        begin
+          Params.Values['category'] := 'client';
+          Params.Values['type'] := 'pc';
+          Params.Values['name'] := ClientName;
+        end;
+        Children.AddCloseTag;
+
         Children.AddTagWithParam('feature', 'var', XMLNS_DISCOINFO);
+        Children.AddTagWithParam('feature', 'var', XMLNS_DISCOITEMS);
         Children.AddTagWithParam('feature', 'var', XMLNS_CHATMARKERS0);
         Children.AddTagWithParam('feature', 'var', XMLNS_VERSION);
         Children.AddTagWithParam('feature', 'var', XMLNS_PING);
         Children.AddTagWithParam('feature', 'var', XMLNS_TIME);
+        Children.AddTagWithParam('feature', 'var', XMLNS_URN_TIME);
+        Children.AddTagWithParam('feature', 'var', XMLNS_ATTENTION);
+      end;
+    end;
+    SendData(Text);
+    Free;
+  end;
+end;
+
+procedure TJabberClient.SendDiscoItems(AJID, ID: string);
+begin
+  with TGmXML.Create do
+  begin
+    with Nodes.AddOpenTag('iq') do
+    begin
+      Params.Values['type'] := 'result';
+      Params.Values['to'] := AJID;
+      Params.Values['from'] := JID + '/' + Resource;
+      Params.Values['id'] := ID;
+      with Children.AddOpenTag('query') do
+      begin
+        Params.Values['xmlns'] := XMLNS_DISCOITEMS;
+        with Children.AddOpenTag('item') do
+        begin
+          Params.Values['jid'] := JID;
+          Params.Values['name'] := UserNick;
+        end;
+        Children.AddCloseTag;
+      end;
+    end;
+    SendData(Text);
+    Free;
+  end;
+end;
+
+function TJabberClient.SendEnterChat(AConf, ANick, APassword: string): string;
+begin
+  Result := GetUniqueID;
+  with TGmXML.Create do
+  begin
+    with Nodes.AddOpenTag('presence') do
+    begin
+      Params.Values['id'] := Result;
+      Params.Values['to'] := AConf + '/' + ANick;
+      if FUserStatus <> stNormal then
+        Children.AddOpenTag('show').AsString := ShowTypeStr[FUserStatus];
+      Children.AddCloseTag;
+      Children.AddOpenTag('status').AsString := FUserStatusText;
+      Children.AddCloseTag;
+      Children.AddOpenTag('priority').AsInteger := FPriority;
+      Children.AddCloseTag;
+      with Children.AddOpenTag('x') do
+      begin
+        Params.Values['xmlns'] := XMLNS_VCARDUPDATE;
+        Children.AddTagValue('photo', FImageVCardSHA);
+      end;
+      Children.AddCloseTag;
+      if not APassword.IsEmpty then
+      begin
+        with Children.AddOpenTag('x') do
+        begin
+          Params.Values['xmlns'] := XMLNS_MUC;
+          Children.AddTagValue('password', APassword);
+        end;
+        Children.AddCloseTag;
       end;
     end;
     SendData(Text);
@@ -1068,11 +1248,35 @@ begin
   if not FJabberOnLine then
     Exit;
 
+  SendPresence;
+end;
+
+procedure TJabberClient.SendPresenceUnavailable(Target: string);
+begin
   with TGmXML.Create do
   begin
     with Nodes.AddOpenTag('presence') do
     begin
-      Children.AddOpenTag('show').AsString := ShowTypeStr[FUserStatus];
+      Params.Values['to'] := Target;
+      Params.Values['type'] := 'unavailable';
+    end;
+    SendData(Text);
+    Free;
+  end;
+end;
+
+function TJabberClient.SendPresence(Target: string): string;
+begin
+  Result := GetUniqueID;
+  with TGmXML.Create do
+  begin
+    with Nodes.AddOpenTag('presence') do
+    begin
+      Params.Values['id'] := Result;
+      if not Target.IsEmpty then
+        Params.Values['to'] := Target;
+      if FUserStatus <> stNormal then
+        Children.AddOpenTag('show').AsString := ShowTypeStr[FUserStatus];
       Children.AddCloseTag;
       Children.AddOpenTag('status').AsString := FUserStatusText;
       Children.AddCloseTag;
@@ -1140,6 +1344,7 @@ begin
     GetRoster;
     // Запрашиваем BookMarks
     GetBookMarks;
+    //FImageVCardSHA := '';
     if Assigned(OnJabberOnLine) then
       FOnJabberOnline(Self);
   end;
@@ -1160,6 +1365,33 @@ begin
         with Nodes.AddOpenTag('storage') do
         begin
           Params.Values['xmlns'] := XMLNS_BM;
+        end;
+      end;
+    end;
+    SendData(Text);
+    Free;
+  end;
+end;
+
+function TJabberClient.SendGetDiscoInfo(AServer, Last: string): string;
+begin
+  Result := GetUniqueID;
+  with TGmXML.Create do
+  begin
+    with Nodes.AddOpenTag('iq') do
+    begin
+      Params.Values['type'] := 'get';
+      Params.Values['id'] := Result;
+      Params.Values['to'] := AServer;
+      with Children.AddOpenTag('query') do
+      begin
+        Params.Values['xmlns'] := XMLNS_DISCOITEMS;
+        with Children.AddOpenTag('set') do
+        begin
+          Params.Values['xmlns'] := XMLNS_RSM;
+          Children.AddTagValue('max', '100');
+          if not Last.IsEmpty then
+            Children.AddTagValue('after', Last);
         end;
       end;
     end;
@@ -1238,6 +1470,27 @@ begin
       Params.Values['type'] := 'result';
       Params.Values['to'] := JID + '/' + Resource;
       Params.Values['id'] := ID;
+    end;
+    SendData(Text);
+    Free;
+  end;
+end;
+
+procedure TJabberClient.SendLast(AJID, ID: string);
+begin
+  with TGmXML.Create do
+  begin
+    with Nodes.AddOpenTag('iq') do
+    begin
+      Params.Values['type'] := 'result';
+      Params.Values['to'] := AJID;
+      Params.Values['from'] := JID + '/' + Resource;
+      Params.Values['id'] := ID;
+      with Children.AddOpenTag('query') do
+      begin
+        Params.Values['xmlns'] := XMLNS_LAST;
+        Params.Values['seconds'] := '0';
+      end;
     end;
     SendData(Text);
     Free;
@@ -1341,6 +1594,48 @@ begin
   FXMPPActions.Delete(Action);
 end;
 
+function TJabberClient.GetListOfConference(Server, Last: string): TConfList;
+var
+  Action: TActionIQConfList;
+begin
+  Result := nil;
+  Action := TActionIQConfList.Create(FXMPPActions, Server, Last);
+  FXMPPActions.Add(Action);
+  while not Action.IsTimeout do
+  begin
+    Application.ProcessMessages;
+    if Action.Executed then
+    begin
+      Result := Action.Result;
+      Break;
+    end;
+    FXMPPActions.CheckTimouts;
+  end;
+  FXMPPActions.Delete(Action);
+  if not Assigned(Result) then
+    Result := TConfList.Create;
+end;
+
+function TJabberClient.ConferenceEnter(AConf, ANick: string): TConfPresence;
+var
+  Action: TActionPresenceToConf;
+begin
+  Action := TActionPresenceToConf.Create(FXMPPActions, AConf, ANick);
+  FXMPPActions.Add(Action);
+  Result.Error := True;
+  while not Action.IsTimeout do
+  begin
+    Application.ProcessMessages;
+    if Action.Executed then
+    begin
+      Result := Action.Result;
+      Break;
+    end;
+    FXMPPActions.CheckTimouts;
+  end;
+  FXMPPActions.Delete(Action);
+end;
+
 function TJabberClient.GetVersion(AJID: string): TJabberVersion;
 var
   Action: TActionIQVersion;
@@ -1368,9 +1663,9 @@ end;
 
 procedure TJabberClient.DoGetRoster(Sender: TObject; QueryNode: TGmXmlNode);
 begin
-  FRosetReceived := True;
   if Assigned(OnGetRoster) then
     FOnGetRoster(Sender, QueryNode);
+  FRosetReceived := True;
 end;
 
 procedure TJabberClient.DoGetIQ(Sender: TObject; QueryNode: TGmXmlNode);
@@ -1383,6 +1678,26 @@ procedure TJabberClient.DoGetMessage(Sender: TObject; Item: TJabberMessage);
 begin
   if Assigned(OnMessage) then
     FOnMessage(Self, Item);
+end;
+
+procedure TJabberClient.SendAttention(AJID, AMessage: string);
+begin
+  with TGmXML.Create do
+  begin
+    with Nodes.AddOpenTag('message') do
+    begin
+      Params.Values['from'] := JID + '/' + Resource;
+      Params.Values['to'] := AJID;
+      Params.Values['type'] := MessageTypeStr[mtHeadLine];
+      if AMessage <> '' then
+      begin
+        Children.AddTagValue('body', ToEscaping(AMessage));
+      end;
+      Children.AddTagWithParam('attention', 'xmlns', XMLNS_ATTENTION);
+    end;
+    SendData(Text);
+    Free;
+  end;
 end;
 
 function TJabberClient.SendMessage(AJID, AMessage: string; MessageType: TMessageType): string;
@@ -1398,9 +1713,10 @@ begin
       Params.Values['id'] := Result;
       if AMessage <> '' then
       begin
-        Children.AddTagValue('body', AMessage);
+        Children.AddTagValue('body', ToEscaping(AMessage));
       end;
-      Children.AddTagWithParam('markable', 'xmlns', XMLNS_CHATMARKERS0);
+      if MessageType <> mtGroupChat then
+        Children.AddTagWithParam('markable', 'xmlns', XMLNS_CHATMARKERS0);
     end;
     SendData(Text);
     Free;
@@ -1561,6 +1877,7 @@ procedure TXMPPActions.CheckTimouts;
 var
   i: Integer;
 begin
+  Exit;
   //Очистка по таймауту (1 за раз)
   for i := 0 to Count - 1 do
   begin
