@@ -164,7 +164,7 @@ type
   private
     FList: TConfList;
   public
-    constructor Create(AOwner: TXMPPActions; Server, Last: string);
+    constructor Create(AOwner: TXMPPActions; Server: string);
     function Execute(Node: TGmXmlNode): Boolean; override;
     property Result: TConfList read FList;
   end;
@@ -585,6 +585,17 @@ begin
   Item.From := Node.Params.Values['from'];
   Item.ToJID := LoginFromJID(Node.Params.Values['to']);
   Item.MessageType := Node.Params.Values['type'];
+  if Item.MessageType = 'error' then
+  begin
+    if Node.Children.NodeExists('error') then
+      with Node.Children.NodeByName['error'] do
+      begin
+        Item.Error.Code := Params.Values['code'];
+        Item.Error.ErrorType := Params.Values['type'];
+        if Children.NodeExists('text') then
+          Item.Error.Text := Children.NodeByName['text'].AsString;
+      end;
+  end;
   if Node.Children.NodeExists('body') then
     Item.Body := FromEscaping(Node.Children.NodeByName['body'].AsString);
   if Node.Children.NodeExists('thread') then
@@ -1014,11 +1025,11 @@ end;
 
 { TActionIQConfList }
 
-constructor TActionIQConfList.Create(AOwner: TXMPPActions; Server, Last: string);
+constructor TActionIQConfList.Create(AOwner: TXMPPActions; Server: string);
 begin
   inherited Create(AOwner);
   FList := TConfList.Create;
-  ID := Owner.Jabber.SendGetDiscoInfo(Server, Last);
+  ID := Owner.Jabber.SendGetDiscoInfo(Server);
 end;
 
 function TActionIQConfList.Execute(Node: TGmXmlNode): Boolean;

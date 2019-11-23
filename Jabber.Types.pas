@@ -136,6 +136,11 @@ type
     XMLNS_XOOB: record
       URL: string;
     end;
+    Error: record
+      Code: string;
+      ErrorType: string;
+      Text: string;
+    end;
   end;
 
   TConfItem = record
@@ -336,7 +341,68 @@ function FromEscaping(Value: string): string;
 
 function ToEscaping(Value: string): string;
 
+function AffiliationInfo(Value: string; var Translate: string): TColor;
+
+function RoleInfo(Value: string; var Translate: string): TColor;
+
 implementation
+
+function AffiliationInfo(Value: string; var Translate: string): TColor;
+begin
+  if Value = 'none' then
+  begin
+    Translate := '';
+    Exit(clNone);
+  end;
+  if Value = 'member' then
+  begin
+    Translate := 'Участник';
+    Exit($00DA9734);
+  end;
+  if Value = 'admin' then
+  begin
+    Translate := 'Админ';
+    Exit($003A4DE7);
+  end;
+  if Value = 'owner' then
+  begin
+    Translate := 'Владелец';
+    Exit($00A6A595);
+  end;
+  if Value = 'outcast' then
+  begin
+    Translate := 'Изгнаник';
+    Exit($009DBD18);
+  end;
+  Translate := '';
+  Result := clNone;
+end;
+
+function RoleInfo(Value: string; var Translate: string): TColor;
+begin
+  if Value = 'none' then
+  begin
+    Translate := '';
+    Exit(clNone);
+  end;
+  if Value = 'moderator' then
+  begin
+    Translate := 'Модератор';
+    Exit($001F81E5);
+  end;
+  if Value = 'participant' then
+  begin
+    Translate := 'Участник';
+    Exit($00DA9734);
+  end;
+  if Value = 'visitor' then
+  begin
+    Translate := 'Прохожий';
+    Exit($00DA9734);
+  end;
+  Translate := '';
+  Result := clNone;
+end;
 
 function ToEscaping(Value: string): string;
 begin
@@ -386,18 +452,22 @@ begin
 end;
 
 function XmlToDate(Value: string): TDate;
+var
+  D: TDateTime;
 begin
   if Value = '' then
     Result := 0
+  else if TryStrToDate(Value, D) then
+    Exit(D)
   else
-    Result := StrToDate(Copy(Value, 9, 2) + '.' + Copy(Value, 6, 2) + '.' + Copy(Value, 1, 4));
+    Result := StrToDateDef(Copy(Value, 9, 2) + '.' + Copy(Value, 6, 2) + '.' + Copy(Value, 1, 4), 0);
 end;
 
 { TRosterItem }
 
 function TRosterItem.GetDisplayStatus: string;
 begin
-  if (StatusText.IsEmpty) or (Status = stOffline) then
+  if (StatusText.IsEmpty) {or (Status = stOffline)} then
     Result := ShowTypeText[Status]
   else
     Result := StatusText;

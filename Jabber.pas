@@ -77,6 +77,7 @@ type
     FOnGetBookMarks: TOnGetBookMarks;
     FOnGetRoster: TOnGetRoster;
     FOnIQ: TOnIQ;
+    FLoginError: Boolean;
     FOnJabberOnline: TOnJabberOnline;
     FOnLoginError: TOnLoginEror;
     FOnMessage: TOnMessage;
@@ -84,7 +85,6 @@ type
     FOnReceiveData: TOnReceiveData;
     FOnSendData: TOnSendData;
     FOnSubscribe: TOnSubscribe;
-    FPassword: string;
     FPriority: Integer;
     FResource: string;
     FSocket: TClientSocket;
@@ -101,6 +101,7 @@ type
     FVCard: TVCard;
     FOnWorkState: TOnWorkState;
     FInParse: Boolean;
+    FAuthHash: string;
     function GetJID: string;
     procedure ParseReceive(Text: string);
     procedure SetJID(const Value: string);
@@ -113,11 +114,13 @@ type
     procedure _OnDisconnect(Sender: TObject; Socket: TCustomWinSocket);
     procedure _OnReceive(Sender: TObject; Socket: TCustomWinSocket);
     procedure _OnSend(Sender: TObject; StrData: string);
+    procedure _OnSendError(Sender: TObject; Socket: TCustomWinSocket);
     procedure SetJabberClientName(const Value: string);
     procedure SetJabberClientVersion(const Value: string);
     procedure SetInReceiveProcess(const Value: Boolean);
     function GetReceiveProcess: Boolean;
     function ClientName: string;
+    procedure SetAuthHash(const Value: string);
     property InProcess: Boolean read GetReceiveProcess write SetInReceiveProcess;
   protected
     XMLStr: string;
@@ -131,7 +134,7 @@ type
     function GetVersion(AJID: string): TJabberVersion;
     function GetVCard(AJID: string): TVCard;
     function ConferenceEnter(AConf, ANick: string): TConfPresence;
-    function GetListOfConference(Server, Last: string): TConfList;
+    function GetListOfConference(Server: string): TConfList;
     function CheckAccount: Boolean;
     function DeleteBadSymbols(Value: string): string;
     function SendAddSetContact(Item: TRosterItem): string;
@@ -140,11 +143,12 @@ type
     function SendDeleteContact(AJID: string): string;
     function SendGetBookmarks: string;
     function SendGetVCard(AJID: string): string;
-    function SendGetDiscoInfo(AServer, Last: string): string;
+    function SendGetDiscoInfo(AServer: string): string;
     function SendGetVersion(AJID: string): string;
     function SendSetBind: string;
     function SendEnterChat(AConf, ANick, APassword: string): string;
     function SendGetRoster: string;
+    function SendInvite(AJID, AConf: string): string;
     function SendSetSession: string;
     function StrForParsing(var Value: string): string;
     function AddContact(Item: TRosterItem): Boolean; overload;
@@ -221,7 +225,7 @@ type
     property OnSendData: TOnSendData read FOnSendData write FOnSendData;
     property OnSubscribe: TOnSubscribe read FOnSubscribe write FOnSubscribe;
     property OnWorkState: TOnWorkState read FOnWorkState write FOnWorkState;
-    property Password: string read FPassword write FPassword;
+    property AuthHash: string read FAuthHash write SetAuthHash;
     property Priority: Integer read FPriority write SetPriority;
     property Resource: string read FResource write FResource;
     property UserName: string read FUserName write FUserName;
@@ -241,11 +245,22 @@ function NickFromConfJID(JID: string): string;
 
 function GetMechainsms(XMLItem: TGmXmlNode): TMechanisms;
 
+function GetAuthHash(UserName, Server, Password: string): string;
+
 implementation
 
 uses
-  Math, Jabber.Actions, IM.Main, Vcl.Forms, IM.Tool.Console, Base64Unit,
-  System.DateUtils, System.TimeSpan;
+  Math, Jabber.Actions, IM.Main, Vcl.Forms, IM.Tool.Console, System.DateUtils,
+  System.TimeSpan, CryptUnit;
+
+function GetAuthHash(UserName, Server, Password: string): string;
+var
+  Hasher: TIdHashMessageDigest5;
+begin
+  Hasher := TIdHashMessageDigest5.Create;
+  Result := Hasher.HashStringAsHex(UserName + ':' + Server + ':' + Password);
+  Hasher.Free;
+end;
 
 function LoginFromJID(JID: string): string;
 begin
@@ -308,7 +323,7 @@ end;
 
 function TJabberClient.CheckAccount: Boolean;
 begin
-  Result := (UserServer <> '') and (UserName <> '') and (JabberPort > 0);
+  Result := (UserServer <> '') and (UserName <> '') and (JabberPort > 0) and (AuthHash <> '') and (not FLoginError);
 end;
 
 procedure TJabberClient.Connect;
@@ -335,6 +350,7 @@ begin
   inherited;
   FSocket := TClientSocket.Create(nil);
   FXMPPItems := TXMPPItems.Create;
+  FLoginError := False;
   FInReceiveProcess := 0;
   FInParse := False;
   FRosetReceived := False;
@@ -761,9 +777,13 @@ procedure TJabberClient.SendData(Str: string);
 var
   Data: UTF8String;
 begin
-  Data := UTF8Encode(DeleteBadSymbols(Str));
-  FSocket.Socket.SendBuf((@Data[1])^, Length(Data));
-  _OnSend(Self, Str);
+  try
+    Data := UTF8Encode(DeleteBadSymbols(Str));
+    FSocket.Socket.SendBuf((@Data[1])^, Length(Data));
+    _OnSend(Self, Str);
+  except
+    _OnSendError(Self, FSocket.Socket);
+  end;
 end;
 
 procedure TJabberClient._OnReceive(Sender: TObject; Socket: TCustomWinSocket);
@@ -775,6 +795,11 @@ procedure TJabberClient._OnSend(Sender: TObject; StrData: string);
 begin
   if Assigned(OnSendData) then
     FOnSendData(Sender, StrData);
+end;
+
+procedure TJabberClient._OnSendError(Sender: TObject; Socket: TCustomWinSocket);
+begin
+  //
 end;
 
 procedure TJabberClient.DoGetSubscribe(From, Nick: string);
@@ -832,8 +857,11 @@ begin
     XMLParser := TGmXML.Create;
     for i := 0 to FXMPPItems.Count - 1 do
     begin
+      if i > FXMPPItems.Count - 1 then
+        Break;
+
+      Handled := True;
       try
-        Handled := True;
         Item := FXMPPItems[i];
         FXMPPItems.Delete(i);
         XMLParser.Nodes.Clear;
@@ -867,17 +895,17 @@ begin
             Break;
           end;
         end;
-
-        //Если ни мы, ни код выше не обработал данные (debug)
-        FOnReceiveData(Self, 'Not handled :' + ItemName, Handled);
-        FXMPPItems.Add(Item);
-        Handled := False;
       except
         on E: Exception do
         begin
           DoError(Self, E.Message);
         end
       end;
+
+        //Если ни мы, ни код выше не обработал данные (debug)
+      FOnReceiveData(Self, 'Not handled :' + ItemName, Handled);
+      FXMPPItems.Add(Item);
+      Handled := False;
     end;
     XMLParser.Free;
     if not Handled then
@@ -1213,6 +1241,11 @@ begin
   Result := FUserName + '@' + FUserServer;
 end;
 
+procedure TJabberClient.SetAuthHash(const Value: string);
+begin
+  FAuthHash := Value;
+end;
+
 procedure TJabberClient.SetInReceiveProcess(const Value: Boolean);
 begin
   if Value then
@@ -1334,6 +1367,7 @@ procedure TJabberClient.DoJabberOnline(Sender: TObject);
 begin
   if not FJabberOnLine then
   begin
+    FLoginError := False;
     FJabberOnLine := True;
     // Запрашиваем свою карточку
     FVCard := GetVCard(JID);
@@ -1373,7 +1407,7 @@ begin
   end;
 end;
 
-function TJabberClient.SendGetDiscoInfo(AServer, Last: string): string;
+function TJabberClient.SendGetDiscoInfo(AServer: string): string;
 begin
   Result := GetUniqueID;
   with TGmXML.Create do
@@ -1386,13 +1420,12 @@ begin
       with Children.AddOpenTag('query') do
       begin
         Params.Values['xmlns'] := XMLNS_DISCOITEMS;
-        with Children.AddOpenTag('set') do
+       { with Children.AddOpenTag('set') do
         begin
           Params.Values['xmlns'] := XMLNS_RSM;
-          Children.AddTagValue('max', '100');
-          if not Last.IsEmpty then
-            Children.AddTagValue('after', Last);
-        end;
+          Children.AddTagValue('max', '300');
+          Children.AddTagValue('index', First.ToString);
+        end; }
       end;
     end;
     SendData(Text);
@@ -1461,6 +1494,26 @@ begin
   end;
 end;
 
+function TJabberClient.SendInvite(AJID, AConf: string): string;
+begin
+  Result := GetUniqueID;
+  with TGmXML.Create do
+  begin
+    with Nodes.AddOpenTag('message') do
+    begin
+      Params.Values['to'] := AConf;
+      Params.Values['id'] := Result;
+      with Children.AddOpenTag('x') do
+      begin
+        Params.Values['xmlns'] := XMLNS_MUCUSER;
+        Children.AddTagWithParam('invite', 'to', AJID);
+      end;
+    end;
+    SendData(Text);
+    Free;
+  end;
+end;
+
 procedure TJabberClient.SendIQResult(ID: string);
 begin
   with TGmXML.Create do
@@ -1510,6 +1563,7 @@ var
   Param_cnonce: string;
   Param_DigestUri: string;
   NonceAndCnonce: AnsiString;
+  //UnSPwd: WideString;
   UnSPwd: TIdBytes;
   Response: string;
 begin
@@ -1544,9 +1598,8 @@ begin
   Result := Result + 'digest-uri="' + Param_DigestUri + '",';
   Result := Result + 'charset=utf-8,';
 
-  UnSPwd := Hasher.HashString(UserName + ':' + UserServer + ':' + Password);
-
   Mem := TMemoryStream.Create;
+  UnSPwd := HexStrToBytes(AuthHash);
   Mem.Write(UnSPwd[0], 16);
   NonceAndCnonce := ':' + Param_nonce + ':' + Param_cnonce;
   Mem.Write(Pointer(NonceAndCnonce)^, Length(NonceAndCnonce));
@@ -1594,12 +1647,12 @@ begin
   FXMPPActions.Delete(Action);
 end;
 
-function TJabberClient.GetListOfConference(Server, Last: string): TConfList;
+function TJabberClient.GetListOfConference(Server: string): TConfList;
 var
   Action: TActionIQConfList;
 begin
   Result := nil;
-  Action := TActionIQConfList.Create(FXMPPActions, Server, Last);
+  Action := TActionIQConfList.Create(FXMPPActions, Server);
   FXMPPActions.Add(Action);
   while not Action.IsTimeout do
   begin
@@ -1819,6 +1872,7 @@ end;
 procedure TJabberClient.DoLoginError(Sender: TObject; Error: string);
 begin
   Disconnect;
+  FLoginError := True;
   if Assigned(FOnLoginError) then
     FOnLoginError(Self, Error);
 end;
@@ -1877,7 +1931,6 @@ procedure TXMPPActions.CheckTimouts;
 var
   i: Integer;
 begin
-  Exit;
   //Очистка по таймауту (1 за раз)
   for i := 0 to Count - 1 do
   begin
