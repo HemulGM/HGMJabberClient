@@ -15,6 +15,7 @@ const
   XMLNS_URN_TIME = 'urn:xmpp:time';
   XMLNS_VERSION = 'jabber:iq:version';
   XMLNS_PING = 'jabber:iq:ping';
+  XMLNS_URN_PING = 'urn:xmpp:ping';
   XMLNS_IQOOB = 'jabber:iq:oob';
   XMLNS_BROWSE = 'jabber:iq:browse';
   XMLNS_AGENTS = 'jabber:iq:agents';
@@ -239,6 +240,7 @@ type
     OS: string;
     Version: string;
     Error: string;
+    function ToString: string;
   end;
 
   TAddressFlag = (afHome, afWork, afPostal, afParcel, afDom, afIntl, afPref);
@@ -392,12 +394,12 @@ begin
   end;
   if Value = 'participant' then
   begin
-    Translate := 'Участник';
+    Translate := 'Пользователь';
     Exit($00DA9734);
   end;
   if Value = 'visitor' then
   begin
-    Translate := 'Прохожий';
+    Translate := 'Гость';
     Exit($00DA9734);
   end;
   Translate := '';
@@ -477,7 +479,7 @@ constructor TRosterItem.Create;
 begin
   inherited;
   Status := stOffline;
-  Avatar := TPngImage.Create;
+  Avatar := nil;
   Groups := TStringList.Create;
 end;
 
@@ -491,7 +493,8 @@ end;
 destructor TRosterItem.Destroy;
 begin
   inherited;
-  Avatar.Free;
+  if Assigned(Avatar) then
+    Avatar.Free;
   Groups.Free;
 end;
 
@@ -531,6 +534,13 @@ end;
 procedure TVCard.ClearTel;
 begin
   SetLength(Tel, 0);
+end;
+
+{ TJabberVersion }
+
+function TJabberVersion.ToString;
+begin
+  Result := Self.Name + #13#10 + Self.OS + #13#10 + Self.Version;
 end;
 
 end.

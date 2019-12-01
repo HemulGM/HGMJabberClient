@@ -611,7 +611,6 @@ begin
   if FConnected then
   begin
     FSocket.Close;
-    _OnDisconnect(Self, nil);
   end;
 end;
 
@@ -1360,7 +1359,7 @@ end;
 
 procedure TJabberClient.UpdateImageHash(BinVal: string);
 begin
-  FImageVCardSHA := Base64ToSHA(BinVal);
+  FImageVCardSHA := Base64ToSHA(BinVal).ToLower;
 end;
 
 procedure TJabberClient.DoJabberOnline(Sender: TObject);

@@ -342,12 +342,10 @@ begin
   if (Node.Params.Values['type'] = 'result') then
   begin
     FStatus := True;
-    ShowMessage('Контакт добавлен');
   end
   else
   begin
     FStatus := False;
-    ShowMessage('Контакт НЕ добавлен');
   end;
 end;
 
@@ -369,11 +367,11 @@ begin
   Result := True;
   if (Node.Params.Values['type'] = 'result') then
   begin
-    ShowMessage('Контакт удалён');
+
   end
   else
   begin
-    ShowMessage('Контакт НЕ удалён');
+
   end;
 end;
 
@@ -685,10 +683,21 @@ end;
 
 function TActionIQResponsePing.Execute(Node: TGmXmlNode): Boolean;
 begin
-  if not Assigned(Node.Children.NodeByName['query']) then
-    Exit(False);
-  if Node.Children.NodeByName['query'].Params.Values['xmlns'] <> XMLNS_PING then
-    Exit(False);
+  if Assigned(Node.Children.NodeByName['query']) then
+  begin
+    if (Node.Children.NodeByName['query'].Params.Values['xmlns'] <> XMLNS_PING) then
+      Exit(False);
+  end
+  else
+  begin
+    if Assigned(Node.Children.NodeByName['ping']) then
+    begin
+      if (Node.Children.NodeByName['ping'].Params.Values['xmlns'] <> XMLNS_URN_PING) then
+        Exit(False);
+    end
+    else
+      Exit(False);
+  end;
   Result := True;
   Owner.Jabber.SendPing(Node.Params.Values['from'], Node.Params.Values['id']);
 end;
@@ -744,8 +753,6 @@ begin
     Item.Groups.Add(ItemNode.Children.Node[i].AsString);
   end;
   Owner.Jabber.DoRosterSet(Owner.Jabber, Item);
-  if Assigned(Item) then
-    Item.Free;
 end;
 
 { TActionIQVCard }
